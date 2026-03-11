@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Initializes git submodules on Heroku.
+# Uses GITHUB_ACCESS_TOKEN env var for private repos.
+
+BUILD_DIR=$1
+ENV_DIR=$3
+
+echo "-----> Initializing git submodules"
+
+cd "$BUILD_DIR"
+
+if [ -f "$ENV_DIR/GITHUB_ACCESS_TOKEN" ]; then
+  TOKEN=$(cat "$ENV_DIR/GITHUB_ACCESS_TOKEN")
+  git config url."https://${TOKEN}@github.com/".insteadOf "https://github.com/"
+  echo "       Using GITHUB_ACCESS_TOKEN for private repos"
+fi
+
+git submodule update --init --recursive 2>&1 | sed 's/^/       /'
+
+echo "-----> Submodules initialized"
