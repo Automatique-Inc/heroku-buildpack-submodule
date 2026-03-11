@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Initializes git submodules on Heroku.
 # Uses GITHUB_ACCESS_TOKEN env var for private repos.
+#
+# Works with both git push and GitHub integration deploys.
+# Falls back to direct clone when .git directory is missing.
 
 BUILD_DIR=$1
 ENV_DIR=$3
@@ -9,12 +12,72 @@ echo "-----> Initializing git submodules"
 
 cd "$BUILD_DIR"
 
+TOKEN=""
 if [ -f "$ENV_DIR/GITHUB_ACCESS_TOKEN" ]; then
   TOKEN=$(cat "$ENV_DIR/GITHUB_ACCESS_TOKEN")
-  git config url."https://${TOKEN}@github.com/".insteadOf "https://github.com/"
   echo "       Using GITHUB_ACCESS_TOKEN for private repos"
 fi
 
-git submodule update --init --recursive 2>&1 | sed 's/^/       /'
+# Try native git submodule first (works with git push deploys)
+if [ -d ".git" ] && [ -f ".gitmodules" ]; then
+  if [ -n "$TOKEN" ]; then
+    git config url."https://${TOKEN}@github.com/".insteadOf "https://github.com/"
+  fi
+  git submodule update --init --recursive 2>&1 | sed 's/^/       /'
+  echo "-----> Submodules initialized via git"
+  exit 0
+fi
 
-echo "-----> Submodules initialized"
+# Fallback: parse .gitmodules and clone directly (GitHub integration deploys)
+if [ -f ".gitmodules" ]; then
+  echo "       No .git directory — cloning submodules directly"
+
+  # Parse each submodule from .gitmodules
+  while IFS= read -r line; do
+    case "$line" in
+      *"path = "*)
+        SM_PATH="${line#*path = }"
+        SM_PATH="$(echo "$SM_PATH" | xargs)"
+        ;;
+      *"url = "*)
+        SM_URL="${line#*url = }"
+        SM_URL="$(echo "$SM_URL" | xargs)"
+        ;;
+      *"branch = "*)
+        SM_BRANCH="${line#*branch = }"
+        SM_BRANCH="$(echo "$SM_BRANCH" | xargs)"
+        ;;
+      *"[submodule"*)
+        SM_PATH=""
+        SM_URL=""
+        SM_BRANCH=""
+        ;;
+    esac
+
+    # When we have both path and url, clone
+    if [ -n "$SM_PATH" ] && [ -n "$SM_URL" ]; then
+      CLONE_URL="$SM_URL"
+      if [ -n "$TOKEN" ]; then
+        CLONE_URL="${SM_URL/https:\/\/github.com/https://${TOKEN}@github.com}"
+      fi
+
+      BRANCH_FLAG=""
+      if [ -n "$SM_BRANCH" ]; then
+        BRANCH_FLAG="--branch $SM_BRANCH"
+      fi
+
+      echo "       Cloning $SM_URL -> $SM_PATH"
+      rm -rf "$SM_PATH"
+      git clone --depth 1 $BRANCH_FLAG "$CLONE_URL" "$SM_PATH" 2>&1 | sed 's/^/       /'
+      rm -rf "$SM_PATH/.git"
+
+      SM_PATH=""
+      SM_URL=""
+      SM_BRANCH=""
+    fi
+  done < .gitmodules
+
+  echo "-----> Submodules initialized via direct clone"
+else
+  echo "       No .gitmodules found — skipping"
+fi
